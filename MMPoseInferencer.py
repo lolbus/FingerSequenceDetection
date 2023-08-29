@@ -41,6 +41,11 @@ def calculate_vector_angle(start_point, end_point) -> float:
     direction = np.arctan2(vector[1], vector[0])
     return direction
 
+def calculate_vector_length(start_point, end_point) -> float:
+    vector = end_point - start_point
+    d = np.linalg.norm(vector, ord=2)
+    return d
+
 def compute_barycentric_coords(p, a, b, c):
     v0 = b - a
     v1 = c - a
@@ -56,11 +61,17 @@ def compute_barycentric_coords(p, a, b, c):
     u = 1.0 - v - w
     return [u, v, w]
 
-def is_inside_finger_reader_space(p):
-    a = metadata.finger_reader_quadrilateral[0]
-    b = metadata.finger_reader_quadrilateral[1]
-    c = metadata.finger_reader_quadrilateral[2]
-    d = metadata.finger_reader_quadrilateral[3]
+def is_inside_finger_reader_space(p, cam_index):
+    if cam_index == 2:
+        a = metadata.finger_reader_quadrilateral_2[0]
+        b = metadata.finger_reader_quadrilateral_2[1]
+        c = metadata.finger_reader_quadrilateral_2[2]
+        d = metadata.finger_reader_quadrilateral_2[3]
+    else:
+        a = metadata.finger_reader_quadrilateral_1[0]
+        b = metadata.finger_reader_quadrilateral_1[1]
+        c = metadata.finger_reader_quadrilateral_1[2]
+        d = metadata.finger_reader_quadrilateral_1[3]
     triangles = [(a, b, c), (a, c, d)]
 
     for triangle in triangles:
@@ -69,14 +80,18 @@ def is_inside_finger_reader_space(p):
             return True
     return False
 
-def calibrate_personFramePoint_to_roiFramePoint(p, personframe_bounding_box) -> np.ndarray:
-    personframe_min_x = personframe_bounding_box.origin_x
-    personframe_min_y = personframe_bounding_box.origin_y
-    return p + np.array([personframe_min_x, personframe_min_y])
+def calibrate_personFramePoint_to_roiFramePoint(p, personframe_bounding_box, use_pf=True) -> np.ndarray:
+    if use_pf:
+        personframe_min_x = personframe_bounding_box.origin_x
+        personframe_min_y = personframe_bounding_box.origin_y
+        return p + np.array([personframe_min_x, personframe_min_y])
+    else:
+        return p
+
 
 
 class MMPoseInferencerObj(object):
-    def __init__(self, threshold=0.3, vis_out_dir='vis_results', batch_size=1, model_name='HRNET_1', finger_of_interest="Thumb", hand_of_interest=(1,0)):
+    def __init__(self, threshold=0.3, vis_out_dir='vis_results', batch_size=1, model_name='HRNET_1', finger_of_interest="Thumb", hand_of_interest=(1,0), device='cuda', cam_index=1, operation_mode=0):
         self.threshold = threshold
         self.vis_out_dir = vis_out_dir
         self.batch_size = 1
@@ -84,17 +99,26 @@ class MMPoseInferencerObj(object):
         if model_name == 'HRNET_1':
             self.inferencer = MMPoseInferencer(
                 pose2d= metadata.mmPoseModelDir + '/td-hm_hrnetv2-w18_dark-8xb32-210e_coco-wholebody-hand-256x256.py',
-                pose2d_weights= metadata.mmPoseModelDir + '/hrnetv2_w18_coco_wholebody_hand_256x256_dark-a9228c9c_20210908.pth')
+                pose2d_weights=metadata.mmPoseModelDir + '/hrnetv2_w18_coco_wholebody_hand_256x256_dark-a9228c9c_20210908.pth',
+                show_progress=False,
+                device=device)
         self.finger_of_interest = finger_of_interest
         self.result = []
         self.landmarks_dict = {'hands_count': 0}
-        self.finger_angles_dict = {'Thumbbase': -3.1416, 'Thumbtipbase': -3.1416, 'Thumbtip': -3.1416}
+        # self.finger_angles_dict = {'Thumbbase': -3.1416, 'Thumbtipbase': -3.1416, 'Thumbtip': -3.1416}
+        self.finger_vectors_dict = {}
         self.foi_tip_point_dict = {}
         self.hand_of_interest = hand_of_interest
         self.status_message = ("Starting up..", (0, 255, 255))
         self.status_updated = False
+        self.cam_index = cam_index
+        self.operatation_mode = operation_mode
+        if self.cam_index == 2:
+            self.keypoint_score_threshold = metadata.KEYPOINT_SCORES_THRESHOLD_DICT[f'camindex{self.cam_index} operationmode{self.operatation_mode}']
+        else:
+            self.keypoint_score_threshold = metadata.KEYPOINT_SCORES_THRESHOLD_DICT['default']
 
-    def __call__(self, input_data, pax_box, file_name=999):
+    def __call__(self, input_data, pax_box, file_name=999, use_pf=True):
         result_list = []
         personframe_bounding_box = pax_box
         result_generator = self.inferencer(input_data, batch_size=self.batch_size,
@@ -111,12 +135,12 @@ class MMPoseInferencerObj(object):
                     foi_tip_index = COCO_LABELS_REVERSE[self.finger_of_interest[0] + "tip2"]
                     foi_tip_point1 = calibrate_personFramePoint_to_roiFramePoint(
                         np.round(np.array(hand_1['keypoints'][foi_tip_index]), 1),
-                        personframe_bounding_box)
+                        personframe_bounding_box, use_pf=use_pf)
                     foi_tip_point2 = calibrate_personFramePoint_to_roiFramePoint(
                         np.round(np.array(hand_2['keypoints'][foi_tip_index]), 1),
-                        personframe_bounding_box)
+                        personframe_bounding_box, use_pf=use_pf)
                     self.foi_tip_point_dict[self.finger_of_interest[0]] = (list(foi_tip_point1), list(foi_tip_point2))
-                    if is_inside_finger_reader_space(foi_tip_point1) and is_inside_finger_reader_space(foi_tip_point2):
+                    if is_inside_finger_reader_space(foi_tip_point1, cam_index=self.cam_index) and is_inside_finger_reader_space(foi_tip_point2, cam_index=self.cam_index):
                         result_list.append(hand_1)
                         result_list.append(hand_2)
                     else:
@@ -124,15 +148,22 @@ class MMPoseInferencerObj(object):
                 else:
                     print("Rejecting becus really cant even detect right number of predicts! Predicts:", len(predictions))
             else: # All other case that are not based on 2 hands of interest
+                #print(f'analysing {len(predictions)} predictions')
                 for p_dict in predictions: # 1 Hand 1 finger results appending
-                    p = p_dict
                     if sum(self.hand_of_interest) == 1 and len(self.finger_of_interest) == 1:
                         foi_tip_index = COCO_LABELS_REVERSE[self.finger_of_interest[0] + "tip2"]
+                        '''try:
+                            print('pdict', p_dict['keypoint_scores'])
+                        except Exception as e:
+                            pass'''
                         foi_tip_point = calibrate_personFramePoint_to_roiFramePoint(
                         np.round(np.array(p_dict['keypoints'][foi_tip_index]), 1),
-                        personframe_bounding_box)
-                        if is_inside_finger_reader_space(foi_tip_point):
+                        personframe_bounding_box, use_pf=use_pf)
+                        if is_inside_finger_reader_space(foi_tip_point, cam_index=self.cam_index):
+                            #print("FOI is inside")
                             result_list.append(p_dict)
+                        #else:
+                            #print("Rejected as FOI is outside!!", p_dict)
                         self.foi_tip_point_dict[self.finger_of_interest[0]] = list(foi_tip_point)
                     else:
                         # print(f"Incomplete development for multi fingers of interest")
@@ -141,8 +172,8 @@ class MMPoseInferencerObj(object):
                             foi_tip_index = COCO_LABELS_REVERSE[f + "tip2"]
                             foi_tip_point = calibrate_personFramePoint_to_roiFramePoint(
                                 np.round(np.array(p_dict['keypoints'][foi_tip_index]), 1),
-                                personframe_bounding_box)
-                            if is_inside_finger_reader_space(foi_tip_point):
+                                personframe_bounding_box, use_pf=use_pf)
+                            if is_inside_finger_reader_space(foi_tip_point, cam_index=self.cam_index):
                                 pass_check += 1
                             self.foi_tip_point_dict[f] = list(foi_tip_point)
                         if pass_check == len(self.finger_of_interest):
@@ -151,14 +182,14 @@ class MMPoseInferencerObj(object):
         hand_counts = len(result_list) if len(result_list) > 0 else 0
         self.landmarks_dict['hands_count'] = hand_counts
         if hand_counts <  sum(self.hand_of_interest):
-            print("Not enough hands detected inside box by landmarkmodel!!", hand_counts)
+            # print("Not enough hands detected inside box by landmarkmodel!!", hand_counts)
             self.status_message = ("All HOI, FOI not presented in FS", (0, 0, 255))
         elif hand_counts == len(result_list):
-            print("detect quantity correct by landmarkmodel ")
+            # print("detect quantity correct by landmarkmodel ")
             self.status_message = ("ALL HOI and FOI Present. Proceed to Analyse formation for undesired fingers", (0, 255, 255))
         else:
             print("No comments .. weird.. more than 2 hands in fs")
-        print("returning")
+        # print("returning")
         return result_list
 
     def firstLoop_Inference(self, f):
@@ -177,12 +208,55 @@ class MMPoseInferencerObj(object):
             if f in self.finger_of_interest:
                 continue
             else:
-                nonfoi_inside_fs_box = self.check_finger_inside_fs_box(f)
+                match (self.hand_of_interest, self.finger_of_interest, f, self.cam_index):
+                    case ((1, 0), ("Thumb",), "Index", 1): # (If left thumb mode and finger assessing is index, special case
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=False)
+                        sum_length = self.finger_vectors_dict['Indexbase0']['length'] + self.finger_vectors_dict['Indextipbase0']['length'] + \
+                                     self.finger_vectors_dict['Indextip0']['length']
+                        tipendbaseend = self.finger_vectors_dict['Indextipendbaseend0']['length']
+                        delta_sum_vs_tipendbaseend= abs(tipendbaseend - sum_length)
+                        if delta_sum_vs_tipendbaseend > 0.15 * sum_length:
+                            nonfoi_inside_fs_box = [False, False]
+                        if nonfoi_inside_fs_box[0] or nonfoi_inside_fs_box[1]:
+                            index_tip_end_point_y = self.landmarks_dict_list[0]['Indextip2'][1]
+                            thumb_tip_end_point_y = self.landmarks_dict_list[0]['Thumbtip2'][1]
+                            if index_tip_end_point_y - thumb_tip_end_point_y > 13:
+                                nonfoi_inside_fs_box = [False, False]
+                    case((1, 0), ("Thumb",), "Index", 2):
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=True)
+                    case ((1, 0), ("Thumb", ), "Middle", 2):
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=True)
+                    case ((1, 0), ("Thumb", ), "Ring", 2):
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=True)
+                    case ((1, 0), ("Thumb", ), "Pinky", 2):
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=True)
+                    case ((0, 1), ("Thumb", ), "Index", 2):
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=True)
+                    case ((0, 1), ("Thumb", ), "Middle", 2):
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=True)
+                    case ((0, 1), ("Thumb", ), "Ring", 2):
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=True)
+                    case ((0, 1), ("Thumb", ), "Pinky", 2):
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=True)
+
+                    case ((1, 0), ("Index", "Middle", "Ring", "Pinky"), "Thumb", 2):
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=True)
+                        # print("check dict", self.keypoint_score_threshold)
+                    case ((0, 1), ("Index", "Middle", "Ring", "Pinky"), "Thumb", 2):
+                        nonfoi_inside_fs_box = self.check_entire_finger_tip_inside_fs_box(f, ignore_low_score_tips=True)
+                        # print("check dict", self.keypoint_score_threshold)
+                    case _:
+                        nonfoi_inside_fs_box = self.check_finger_inside_fs_box(f)
+
+
+                # nonfoi_inside_fs_box = self.check_finger_inside_fs_box(f)
                 # print(f"checking nonfoi on 2 hands: {f} .. result {nonfoi_inside_fs_box}")
                 if nonfoi_inside_fs_box[0] or nonfoi_inside_fs_box[1]:
-                    print(f"Detect nonfoi, {f} inside box! ")
+                    # print(f"Detect nonfoi, {f} inside box! ")
                     break
             angles_dict = self.finger_angles_dict # To be completed...
+
+
         p = not nonfoi_inside_fs_box[0] and not nonfoi_inside_fs_box[1]
         self.status_message = (f"Pass Validity Check", (0, 255, 0)) if p else (f"Failed Validity Check, non FOI {f} in FS", (0, 0, 255))
         return p
@@ -196,7 +270,28 @@ class MMPoseInferencerObj(object):
         check = [False, False]
         for i, landmarks_dict in enumerate(self.landmarks_dict_list):
             finger_point = landmarks_dict[finger + 'tip2']
-            check[i] = is_inside_finger_reader_space(finger_point)
+            check[i] = is_inside_finger_reader_space(finger_point, cam_index=self.cam_index)
+        return check
+
+    def check_entire_finger_tip_inside_fs_box(self, finger: str, ignore_low_score_tips = False):
+        check = [False, False]
+        for i, landmarks_dict in enumerate(self.landmarks_dict_list):
+            fingertip1_point = landmarks_dict[finger + 'tip1']
+            fingertip2_point = landmarks_dict[finger + 'tip2']
+            if not ignore_low_score_tips:
+                check[i] = is_inside_finger_reader_space(fingertip1_point, cam_index=self.cam_index) \
+                           and is_inside_finger_reader_space(fingertip2_point, cam_index=self.cam_index)
+            else:
+                fingertip2_score = landmarks_dict[finger + 'tip2 keypoint_scores']
+                fingertip2_threshold = self.keypoint_score_threshold[COCO_LABELS_REVERSE[finger + 'tip2']]
+                # print('fingertip1score/2score', finger, fingertip2_score, fingertip2_threshold)
+                if fingertip2_score < fingertip2_threshold:
+                    continue
+                else:
+
+                    check[i] = is_inside_finger_reader_space(fingertip2_point, cam_index=self.cam_index)
+                    # print('pass status', self.cam_index, check[i])
+
         return check
 
     def get_thumb_vectors(self):
@@ -221,27 +316,42 @@ class MMPoseInferencerObj(object):
 
     def get_thumb_vectors_list(self):
         # Get the angle for the first predict
-        l = []
         for idx, landmarks_dict in enumerate(self.landmarks_dict_list):
             i = str(idx)
             thumbtip1_xy = convert_landmark_point_to_xy_point(landmarks_dict['Thumbtip1'])
             thumbtip2_xy = convert_landmark_point_to_xy_point(landmarks_dict['Thumbtip2'])
             thumbbase1_xy = convert_landmark_point_to_xy_point(landmarks_dict['Thumbbase1'])
             thumbbase2_xy = convert_landmark_point_to_xy_point(landmarks_dict['Thumbbase2'])
+
             thumbbase_angle = round(calculate_vector_angle(thumbbase1_xy, thumbbase2_xy), 5)
             thumbtipbase_angle = round(calculate_vector_angle(thumbbase2_xy, thumbtip1_xy), 5)
             thumbtip_angle = round(calculate_vector_angle(thumbtip1_xy, thumbtip2_xy), 5)
             thumbtipendbaseend_angle = round(calculate_vector_angle(thumbbase1_xy, thumbtip2_xy), 5)
             thumbtipendbasehead_angle = round(calculate_vector_angle(thumbbase2_xy, thumbtip2_xy), 5)
 
-            self.finger_angles_dict['Thumbbase' + i] = thumbbase_angle
+            thumbbase_length = round(calculate_vector_length(thumbbase1_xy, thumbbase2_xy), 1)
+            thumbtipbase_length = round(calculate_vector_length(thumbbase2_xy, thumbtip1_xy), 1)
+            thumbtip_length = round(calculate_vector_length(thumbtip1_xy, thumbtip2_xy), 1)
+            thumbtipendbaseend_length = round(calculate_vector_length(thumbbase1_xy, thumbtip2_xy), 1)
+            thumbtipendbasehead_length = round(calculate_vector_length(thumbbase2_xy, thumbtip2_xy), 1)
+
+            '''self.finger_angles_dict['Thumbbase' + i] = thumbbase_angle
             self.finger_angles_dict['Thumbtipbase' + i] = thumbtipbase_angle
             self.finger_angles_dict['Thumbtip' + i] = thumbtip_angle
             self.finger_angles_dict['Thumbtipendbaseend' + i] = thumbtipendbaseend_angle
             self.finger_angles_dict['Thumbtipendbasehead' + i] = thumbtipendbasehead_angle
             l.append([thumbbase_angle, thumbtipbase_angle, thumbtip_angle,
-                      thumbtipendbaseend_angle, thumbtipendbasehead_angle])
-        return l
+                      thumbtipendbaseend_angle, thumbtipendbasehead_angle])'''
+
+
+            self.finger_vectors_dict['Thumbbase' + i] = {'length': thumbbase_length, 'angle': thumbbase_angle}
+            self.finger_vectors_dict['Thumbtipbase' + i] = {'length': thumbtipbase_length, 'angle': thumbtipbase_angle}
+            self.finger_vectors_dict['Thumbtip' + i] = {'length': thumbtip_length, 'angle': thumbtip_angle}
+            self.finger_vectors_dict['Thumbtipendbaseend' + i] = {'length': thumbtipendbaseend_length,
+                                                                  'angle': thumbtipendbaseend_angle}
+            self.finger_vectors_dict['Thumbtipendbasehead' + i] = {'length': thumbtipendbasehead_length,
+                                                                   'angle': thumbtipendbasehead_angle}
+
 
     def get_index_vectors(self):
         # Get the angle for the first predict
@@ -265,7 +375,7 @@ class MMPoseInferencerObj(object):
         return base_angle, tipbase_angle, tip_angle, tipendbaseend_angle, tipendbasehead_angle
 
     def get_index_vectors_list(self):
-        l = []
+        index_dict_list = []
         for idx, landmarks_dict in enumerate(self.landmarks_dict_list):
             i = str(idx)
             # Get the angle for the first predict
@@ -279,14 +389,25 @@ class MMPoseInferencerObj(object):
             tipendbaseend_angle = round(calculate_vector_angle(base1_xy, tip2_xy), 5)
             tipendbasehead_angle = round(calculate_vector_angle(base2_xy, tip2_xy), 5)
 
-            # Update the predictor's prediction attributes
+            base_length = round(calculate_vector_length(base1_xy, base2_xy), 1)
+            tipbase_length = round(calculate_vector_length(base2_xy, tip1_xy), 1)
+            tip_length = round(calculate_vector_length(tip1_xy, tip2_xy), 1)
+            tipendbaseend_length = round(calculate_vector_length(base1_xy, tip2_xy), 1)
+            tipendbasehead_length = round(calculate_vector_length(base2_xy, tip2_xy), 1)
+
+
+            '''# Update the predictor's prediction attributes
             self.finger_angles_dict['Indexbase' + i] = base_angle
             self.finger_angles_dict['Indextipbase' + i] = tipbase_angle
             self.finger_angles_dict['Indextip' + i] = tip_angle
             self.finger_angles_dict['Indextipendbaseend' + i] = tipendbaseend_angle
-            self.finger_angles_dict['Indextipendbasehead' + i] = tipendbasehead_angle
-            l.append([base_angle, tipbase_angle, tip_angle, tipendbaseend_angle, tipendbasehead_angle])
-        return l
+            self.finger_angles_dict['Indextipendbasehead' + i] = tipendbasehead_angle'''
+
+            self.finger_vectors_dict['Indexbase' + i] = {'length': base_length, 'angle': base_angle}
+            self.finger_vectors_dict['Indextipbase' + i] = {'length': tipbase_length, 'angle': tipbase_angle}
+            self.finger_vectors_dict['Indextip' + i] = {'length': tip_length, 'angle': tip_angle}
+            self.finger_vectors_dict['Indextipendbaseend' + i] = {'length': tipendbaseend_length, 'angle': tipendbaseend_angle}
+            self.finger_vectors_dict['Indextipendbasehead' + i] = {'length': tipendbasehead_length, 'angle': tipendbasehead_angle}
 
     def get_middle_vectors(self):
         # Get the angle for the first predict
@@ -318,20 +439,33 @@ class MMPoseInferencerObj(object):
             tip2_xy = convert_landmark_point_to_xy_point(landmarks_dict['Middletip2'])
             base1_xy = convert_landmark_point_to_xy_point(landmarks_dict['Middlebase1'])
             base2_xy = convert_landmark_point_to_xy_point(landmarks_dict['Middlebase2'])
+
             base_angle = round(calculate_vector_angle(base1_xy, base2_xy), 5)
             tipbase_angle = round(calculate_vector_angle(base2_xy, tip1_xy), 5)
             tip_angle = round(calculate_vector_angle(tip1_xy, tip2_xy), 5)
             tipendbaseend_angle = round(calculate_vector_angle(base1_xy, tip2_xy), 5)
             tipendbasehead_angle = round(calculate_vector_angle(base2_xy, tip2_xy), 5)
 
-            # Update the predictor's prediction attributes
+            base_length = round(calculate_vector_length(base1_xy, base2_xy), 1)
+            tipbase_length = round(calculate_vector_length(base2_xy, tip1_xy), 1)
+            tip_length = round(calculate_vector_length(tip1_xy, tip2_xy), 1)
+            tipendbaseend_length = round(calculate_vector_length(base1_xy, tip2_xy), 1)
+            tipendbasehead_length = round(calculate_vector_length(base2_xy, tip2_xy), 1)
+
+            '''# Update the predictor's prediction attributes
             self.finger_angles_dict['Middlebase' + i] = base_angle
             self.finger_angles_dict['Middletipbase' + i] = tipbase_angle
             self.finger_angles_dict['Middletip' + i] = tip_angle
             self.finger_angles_dict['Middletipendbaseend' + i] = tipendbaseend_angle
-            self.finger_angles_dict['Middletipendbasehead' + i] = tipendbasehead_angle
-            l.append([base_angle, tipbase_angle, tip_angle, tipendbaseend_angle, tipendbasehead_angle])
-        return l
+            self.finger_angles_dict['Middletipendbasehead' + i] = tipendbasehead_angle'''
+
+            self.finger_vectors_dict['Middlebase' + i] = {'length': base_length, 'angle': base_angle}
+            self.finger_vectors_dict['Middletipbase' + i] = {'length': tipbase_length, 'angle': tipbase_angle}
+            self.finger_vectors_dict['Middletip' + i] = {'length': tip_length, 'angle': tip_angle}
+            self.finger_vectors_dict['Middletipendbaseend' + i] = {'length': tipendbaseend_length,
+                                                                   'angle': tipendbaseend_angle}
+            self.finger_vectors_dict['Middletipendbasehead' + i] = {'length': tipendbasehead_length,
+                                                                    'angle': tipendbasehead_angle}
 
     def get_ring_vectors(self):
         # Get the angle for the first predict
@@ -344,6 +478,7 @@ class MMPoseInferencerObj(object):
         tip_angle = round(calculate_vector_angle(tip1_xy, tip2_xy), 5)
         tipendbaseend_angle = round(calculate_vector_angle(base1_xy, tip2_xy), 5)
         tipendbasehead_angle = round(calculate_vector_angle(base2_xy, tip2_xy), 5)
+
 
         # Update the predictor's prediction attributes
         self.finger_angles_dict['Ringbase'] = base_angle
@@ -369,14 +504,26 @@ class MMPoseInferencerObj(object):
             tipendbaseend_angle = round(calculate_vector_angle(base1_xy, tip2_xy), 5)
             tipendbasehead_angle = round(calculate_vector_angle(base2_xy, tip2_xy), 5)
 
+            base_length = round(calculate_vector_length(base1_xy, base2_xy), 1)
+            tipbase_length = round(calculate_vector_length(base2_xy, tip1_xy), 1)
+            tip_length = round(calculate_vector_length(tip1_xy, tip2_xy), 1)
+            tipendbaseend_length = round(calculate_vector_length(base1_xy, tip2_xy), 1)
+            tipendbasehead_length = round(calculate_vector_length(base2_xy, tip2_xy), 1)
+
             # Update the predictor's prediction attributes
-            self.finger_angles_dict['Ringbase' + i] = base_angle
+            '''self.finger_angles_dict['Ringbase' + i] = base_angle
             self.finger_angles_dict['Ringtipbase' + i] = tipbase_angle
             self.finger_angles_dict['Ringtip' + i] = tip_angle
             self.finger_angles_dict['Ringtipendbaseend' + i] = tipendbaseend_angle
-            self.finger_angles_dict['Ringtipendbasehead' + i] = tipendbasehead_angle
-            l.append([base_angle, tipbase_angle, tip_angle, tipendbaseend_angle, tipendbasehead_angle])
-        return l
+            self.finger_angles_dict['Ringtipendbasehead' + i] = tipendbasehead_angle'''
+
+            self.finger_vectors_dict['Ringbase' + i] = {'length': base_length, 'angle': base_angle}
+            self.finger_vectors_dict['Ringtipbase' + i] = {'length': tipbase_length, 'angle': tipbase_angle}
+            self.finger_vectors_dict['Ringtip' + i] = {'length': tip_length, 'angle': tip_angle}
+            self.finger_vectors_dict['Ringtipendbaseend' + i] = {'length': tipendbaseend_length,
+                                                                   'angle': tipendbaseend_angle}
+            self.finger_vectors_dict['Ringtipendbasehead' + i] = {'length': tipendbasehead_length,
+                                                                    'angle': tipendbasehead_angle}
 
     def get_pinky_vectors(self):
         # Get the angle for the first predict
@@ -414,14 +561,26 @@ class MMPoseInferencerObj(object):
             tipendbaseend_angle = round(calculate_vector_angle(base1_xy, tip2_xy), 5)
             tipendbasehead_angle = round(calculate_vector_angle(base2_xy, tip2_xy), 5)
 
+            base_length = round(calculate_vector_length(base1_xy, base2_xy), 1)
+            tipbase_length = round(calculate_vector_length(base2_xy, tip1_xy), 1)
+            tip_length = round(calculate_vector_length(tip1_xy, tip2_xy), 1)
+            tipendbaseend_length = round(calculate_vector_length(base1_xy, tip2_xy), 1)
+            tipendbasehead_length = round(calculate_vector_length(base2_xy, tip2_xy), 1)
+
             # Update the predictor's prediction attributes
-            self.finger_angles_dict['Pinkybase' + i] = base_angle
+            '''self.finger_angles_dict['Pinkybase' + i] = base_angle
             self.finger_angles_dict['Pinkytipbase' + i] = tipbase_angle
             self.finger_angles_dict['Pinkytip' + i] = tip_angle
             self.finger_angles_dict['Pinkytipendbaseend' + i] = tipendbaseend_angle
-            self.finger_angles_dict['Pinkytipendbasehead' + i] = tipendbasehead_angle
-            l.append([base_angle, tipbase_angle, tip_angle, tipendbaseend_angle, tipendbasehead_angle])
-        return l
+            self.finger_angles_dict['Pinkytipendbasehead' + i] = tipendbasehead_angle'''
+
+            self.finger_vectors_dict['Ringbase' + i] = {'length': base_length, 'angle': base_angle}
+            self.finger_vectors_dict['Ringtipbase' + i] = {'length': tipbase_length, 'angle': tipbase_angle}
+            self.finger_vectors_dict['Ringtip' + i] = {'length': tip_length, 'angle': tip_angle}
+            self.finger_vectors_dict['Ringtipendbaseend' + i] = {'length': tipendbaseend_length,
+                                                                 'angle': tipendbaseend_angle}
+            self.finger_vectors_dict['Ringtipendbasehead' + i] = {'length': tipendbasehead_length,
+                                                                  'angle': tipendbasehead_angle}
 
     '''def get_all_vectors(self):
         thumb = self.get_thumb_vectors()
@@ -442,25 +601,24 @@ class MMPoseInferencerObj(object):
 
     def draw_foi_vectors_text(self, frame: np.ndarray):
         # Only used for single FOI
-        cv2.putText(frame, self.finger_of_interest[0] + "tip angle" + str(self.finger_angles_dict[self.finger_of_interest[0] + 'tip0']), (10, 200),
+        cv2.putText(frame, self.finger_of_interest[0] + "tip angle" + str(self.finger_vectors_dict[self.finger_of_interest[0] + 'tip0']['angle']), (10, 200),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35,
                     (255, 255, 255), 1)
-        cv2.putText(frame, self.finger_of_interest[0] + "tipbaseangle" + str(self.finger_angles_dict[self.finger_of_interest[0] + 'tipbase0']), (10, 225),
+        cv2.putText(frame, self.finger_of_interest[0] + "tipbaseangle" + str(self.finger_vectors_dict[self.finger_of_interest[0] + 'tipbase0']['angle']), (10, 225),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35,
                     (255, 255, 255), 1)
-        cv2.putText(frame, self.finger_of_interest[0] + "base angle" + str(self.finger_angles_dict[self.finger_of_interest[0] + 'base0']), (10, 250),
+        cv2.putText(frame, self.finger_of_interest[0] + "base angle" + str(self.finger_vectors_dict[self.finger_of_interest[0] + 'base0']['angle']), (10, 250),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35,
                     (255, 255, 255), 1)
-        cv2.putText(frame, self.finger_of_interest[0] + " Tipend, Baseend angle" + str(self.finger_angles_dict[self.finger_of_interest[0] + 'tipendbaseend0']), (10, 275),
+        cv2.putText(frame, self.finger_of_interest[0] + " tipend, baseend angle" + str(self.finger_vectors_dict[self.finger_of_interest[0] + 'tipendbaseend0']['angle']), (10, 275),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35,
                     (255, 255, 255), 1)
-        cv2.putText(frame, self.finger_of_interest[0] + " Tipend, Basehead angle" + str(self.finger_angles_dict[self.finger_of_interest[0] + 'tipendbasehead0']), (10, 300),
+        cv2.putText(frame, self.finger_of_interest[0] + " tipend, basehead angle" + str(self.finger_vectors_dict[self.finger_of_interest[0] + 'tipendbasehead0']['angle']), (10, 300),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35,
                     (255, 255, 255), 1)
         return frame
 
-
-    def get_and_update_landmarks_dict(self, r: list, pax_box) -> dict:
+    def get_and_update_landmarks_dict(self, r: list, pax_box, use_pax_box_offset=True) -> dict:
         personframe_bounding_box = pax_box
         personframe_min_x = personframe_bounding_box.origin_x
         personframe_min_y = personframe_bounding_box.origin_y
@@ -492,32 +650,36 @@ class MMPoseInferencerObj(object):
         for result_dict in r:
             landmarks_dict = {}
             for index_keys in COCO_LABELS.keys():
-                landmarks_dict[COCO_LABELS[index_keys]] = (
-                    int(round(personframe_min_x + result_dict['keypoints'][index_keys][0])),
-                    int(round(personframe_min_y + result_dict['keypoints'][index_keys][1])))
+                if use_pax_box_offset:
+                    landmarks_dict[COCO_LABELS[index_keys]] = (
+                        int(round(personframe_min_x + result_dict['keypoints'][index_keys][0])),
+                        int(round(personframe_min_y + result_dict['keypoints'][index_keys][1])))
+                else:
+                    landmarks_dict[COCO_LABELS[index_keys]] = (
+                        int(round(result_dict['keypoints'][index_keys][0])),
+                        int(round(result_dict['keypoints'][index_keys][1])))
+                landmarks_dict[COCO_LABELS[index_keys] + " keypoint_scores"] = result_dict['keypoint_scores'][index_keys]
+
             self.landmarks_dict_list.append(landmarks_dict)
             # print("current landmark size", len(self.landmarks_dict_list))
             if len(r) == 1:
                 self.landmarks_dict = landmarks_dict
         return self.landmarks_dict_list, True
-        return {}, False
 
     def draw_status_message(self, frame:np.ndarray)-> np.ndarray:
         #if not self.status_updated:
         message = self.status_message[0] + " Mode:" + str(self.hand_of_interest) + str(self.finger_of_interest)
         color = self.status_message[1]
-        cv2.putText(frame, message, (10, 10),
+        rf = cv2.putText(frame, message, (10, 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35,
                     color, 1)
         #self.status_updated = True
-        return frame
-
+        return rf
 
     def draw_fingers_vectors_list(self, frame: np.ndarray):
         for landmarks_dict in self.landmarks_dict_list:
             frame = self.draw_fingers_vectors(frame, landmarks_dict)
         return frame
-
 
     '''def draw_fingers_vectors(self, frame: np.ndarray, landmarks_dict = {} )->np.ndarray:
         # print("Drawing successful vectors") # May be redundant method..
@@ -572,14 +734,14 @@ class MMPoseInferencerObj(object):
 
 
     def draw_fingers_vectors(self, frame: np.ndarray):
-        # FOI Drawing
-        print("Drawing failed finger vectors")
+        # FOI and non FOI Drawing
         FOI = self.finger_of_interest
         fingers_to_draw = ["Thumb", "Index", "Middle", "Ring", "Pinky"]
+
         if len(self.landmarks_dict_list) == 2:
             for landmarks_dict in self.landmarks_dict_list:
                 for finger in fingers_to_draw:
-                    finger_in_box = is_inside_finger_reader_space(landmarks_dict[finger + 'tip2'])
+                    finger_in_box = is_inside_finger_reader_space(landmarks_dict[finger + 'tip2'], cam_index=self.cam_index)
                     if finger in FOI:
                         # draw base1 to tip2 as white
                         tip_end_color = (0, 255, 0) if finger_in_box else (0, 0, 255)
@@ -638,7 +800,12 @@ class MMPoseInferencerObj(object):
                                                 (255, 255, 255), 2)
         else:
             for finger in fingers_to_draw:
-                finger_in_box = is_inside_finger_reader_space(self.landmarks_dict[finger + 'tip2'])
+                fingertip2_score = self.landmarks_dict[finger + 'tip2 keypoint_scores']
+                fingertip2_threshold = self.keypoint_score_threshold[COCO_LABELS_REVERSE[finger + 'tip2']]
+                if self.cam_index == 2 and fingertip2_score < fingertip2_threshold:
+                    finger_in_box = False # Cannot be determined as we dont have good confidence to trace the nonfoi pose of this finger!
+                else:
+                    finger_in_box = is_inside_finger_reader_space(self.landmarks_dict[finger + 'tip2'], cam_index=self.cam_index)
                 if finger in FOI:
                     # draw base1 to tip2 as white
                     tip_end_color = (0, 255, 0) if finger_in_box else (0, 0, 255)
@@ -661,7 +828,6 @@ class MMPoseInferencerObj(object):
                     frame = cv2.arrowedLine(frame, self.landmarks_dict[finger + 'base1'], self.landmarks_dict[finger + 'base2'],
                                             tip_end_color, 2)
                 else:
-
                     tip_end_color = (0, 0, 255) if finger_in_box else (0, 255, 0)
 
                     # draw base1 to tip2 as white

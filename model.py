@@ -41,7 +41,7 @@ class CCTV_hand_modeler(object):
 class modelloader(object):
     def __init__(self, modelname="IVOD V1", threshold=0.1):
         self.metadata = DatasetMeta()
-        models_dir = self.metadata.modelDir
+        models_dir = self.metadata.mmPoseModelDir
 
         if modelname == "CCTV_MP_PERSON_PREDICTOR":
             options = vision.ObjectDetectorOptions(
@@ -54,8 +54,6 @@ class modelloader(object):
             self.detector = vision.ObjectDetector.create_from_options(options)
             self.CCTV_person_Handler = CCTV_person_modeler(self.detector)
             self.person_modeler = self.CCTV_person_Handler.persondetector_evaluate_frame
-
-
             self.modeler_positive_thresold = 0
 
         elif modelname == "CCTV_MP_HAND_PREDICTOR":

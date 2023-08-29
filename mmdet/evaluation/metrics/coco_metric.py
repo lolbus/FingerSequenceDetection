@@ -236,6 +236,7 @@ class CocoMetric(BaseMetric):
                 data['image_id'] = image_id
                 data['bbox'] = self.xyxy2xywh(bboxes[i])
                 data['score'] = float(scores[i])
+                print('the label', label)
                 data['category_id'] = self.cat_ids[label]
                 bbox_json_results.append(data)
 

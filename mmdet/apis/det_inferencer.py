@@ -387,7 +387,7 @@ class DetInferencer(BaseInferencer):
         inputs = self.preprocess(
             ori_inputs, batch_size=batch_size, **preprocess_kwargs)
 
-        self.show_progress = False # Dont need the useless bar
+        # self.show_progress = False # Dont need the useless bar
         results_dict = {'predictions': [], 'visualization': []}
         for ori_imgs, data in (track(inputs, description='Inference')
                                if self.show_progress else inputs):
