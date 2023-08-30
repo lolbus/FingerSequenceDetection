@@ -66,6 +66,7 @@ class systemStatusHandler_object():
         # self.truelabel = metadata.operation_mode_to_true_label_dict[self.operation_mode]
         self.data_df = pd.read_csv(metadata.HOME_DIR + 'data_info.csv')
         self.idx = 0 if self.data_df.shape[0] == 0 else self.data_df['index'].iloc[-1]
+        self.webcam = True
 
 
 statusHandler = camStatusHandler_object()
@@ -388,6 +389,37 @@ def stream_cam_2():
         cap.release()
         cv2.destroyAllWindows()
 
+
+def stream_webcam():
+    # Use OpenCV to read the video stream
+    cap = cv2.VideoCapture(0)
+    cv2.namedWindow("Webcam", cv2.WINDOW_NORMAL)
+    print("Starting webcam stream")
+    try:
+        while True:
+            ret, frame = cap.read()
+            statusHandler2.ret_cam_2 = ret
+            if ret:
+                # print("detect 2nd cam frame!", statusHandler2.ret_cam_2 )
+                statusHandler2.frame_2 = frame
+                '''if statusHandler2.FirstLoop_cam_2:
+                    time.sleep(1)'''
+                if not statusHandler2.FirstLoop_cam_2:
+                    df = draw_handlandmarkmodel_status(statusHandler2.processed_frame_2, cam_index=2)
+                    cv2.imshow("CCTV Stream 2", df)
+            else:
+                print('warning no ret')
+            # Break the loop if 'q' is pressed
+            if cv2.waitKey(10) & 0xFF == ord('q'):
+                break
+    except Exception as e:
+        print('error on cam 2.. restarting..')
+        print(e)
+        stream_webcam()
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+
 #time.sleep(0.1)
 key_listener_thread = Thread(target=key_listener.start_listener)
 key_listener_thread.start()
@@ -398,9 +430,12 @@ streaming_thread_1.start()
 infer_thread_1 = Thread(target=infer_and_save_cam1)
 infer_thread_1.start()
 '''
-
-streaming_thread_2 = Thread(target=stream_cam_2)
-streaming_thread_2.start()
+if mainHandler.webcam:
+    streaming_thread_2 = Thread(target=stream_webcam)
+    streaming_thread_2.start()
+else:
+    streaming_thread_2 = Thread(target=stream_cam_2)
+    streaming_thread_2.start()
 
 infer_thread_2 = Thread(target=infer_and_save_cam2)
 infer_thread_2.start()
